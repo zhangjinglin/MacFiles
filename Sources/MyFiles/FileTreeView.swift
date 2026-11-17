@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 
 final class EnterOutlineView: NSOutlineView {
     var onEnter: (() -> Void)?
@@ -21,13 +22,15 @@ final class EnterOutlineView: NSOutlineView {
 final class TreeNode {
     let url: URL
     let name: String
+    var icon: NSImage
     let volumeKind: Volume.Kind?
     var children: [TreeNode]?
     var isLoading = false
 
-    init(url: URL, name: String, volumeKind: Volume.Kind? = nil) {
+    init(url: URL, name: String, icon: NSImage, volumeKind: Volume.Kind? = nil) {
         self.url = url
         self.name = name
+        self.icon = icon
         self.volumeKind = volumeKind
     }
 }
@@ -48,6 +51,55 @@ final class DirectoryTreeViewController: NSViewController {
 
     private let outlineView = EnterOutlineView()
     private var groups: [TreeGroup] = []
+
+    private var volumeIcons: [URL: NSImage] = [:]
+
+    private lazy var folderIcon: NSImage = {
+        sizedIcon(NSWorkspace.shared.icon(for: .folder))
+    }()
+
+    private lazy var placeholderVolumeIcon: NSImage = {
+        sizedIcon(NSWorkspace.shared.icon(for: .volume))
+    }()
+
+    private lazy var networkIcon: NSImage = {
+        let sidebarIcon = "/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/SidebarNetwork.icns"
+        if let image = NSImage(contentsOfFile: sidebarIcon) {
+            image.isTemplate = true
+            return sizedIcon(image)
+        }
+        return sizedIcon(NSWorkspace.shared.icon(forFile: "/Volumes"))
+    }()
+
+    private func sizedIcon(_ image: NSImage) -> NSImage {
+        let copy = (image.copy() as? NSImage) ?? image
+        copy.size = NSSize(width: 16, height: 16)
+        copy.isTemplate = image.isTemplate
+        return copy
+    }
+
+    /// Volume icons come from the file system, so fetch them off the main
+    /// thread. A disconnected network volume can stall the query; the tree
+    /// keeps showing the generic volume icon until the real one arrives.
+    private func fetchVolumeIcon(for url: URL) {
+        Task.detached(priority: .utility) {
+            let image = NSWorkspace.shared.icon(forFile: url.path)
+            guard let tiff = image.tiffRepresentation,
+                  let bitmap = NSBitmapImageRep(data: tiff),
+                  let data = bitmap.representation(using: .png, properties: [:]) else { return }
+            await MainActor.run { [weak self] in
+                guard let self,
+                      self.volumeIcons[url] == nil,
+                      let icon = NSImage(data: data) else { return }
+                icon.size = NSSize(width: 16, height: 16)
+                self.volumeIcons[url] = icon
+                if let node = self.groups.flatMap(\.nodes).first(where: { $0.url == url }) {
+                    node.icon = icon
+                    self.outlineView.reloadItem(node)
+                }
+            }
+        }
+    }
 
     override func loadView() {
         let column = NSTableColumn(identifier: .init("name"))
@@ -107,7 +159,18 @@ final class DirectoryTreeViewController: NSViewController {
             guard !volumesOfKind.isEmpty else { return nil }
             let group = existingGroups[kind] ?? TreeGroup(kind: kind)
             group.nodes = volumesOfKind.map { volume in
-                existingNodes[volume.url] ?? TreeNode(url: volume.url, name: volume.name, volumeKind: kind)
+                existingNodes[volume.url] ?? {
+                    let icon: NSImage
+                    if let cached = volumeIcons[volume.url] {
+                        icon = cached
+                    } else if kind == .network {
+                        icon = networkIcon
+                    } else {
+                        icon = placeholderVolumeIcon
+                        fetchVolumeIcon(for: volume.url)
+                    }
+                    return TreeNode(url: volume.url, name: volume.name, icon: icon, volumeKind: kind)
+                }()
             }
             return group
         }
@@ -171,7 +234,9 @@ final class DirectoryTreeViewController: NSViewController {
         Task {
             let directories = await FileSystemManager.subdirectories(of: url)
             node.isLoading = false
-            node.children = directories.map { TreeNode(url: $0, name: $0.lastPathComponent) }
+            node.children = directories.map {
+                TreeNode(url: $0, name: $0.lastPathComponent, icon: folderIcon)
+            }
             outlineView.reloadItem(node, reloadChildren: true)
         }
     }
@@ -243,11 +308,8 @@ extension DirectoryTreeViewController: NSOutlineViewDelegate {
         cell.textField?.stringValue = node.name
         cell.textField?.font = .systemFont(ofSize: 13)
         cell.textField?.textColor = .labelColor
-        if let kind = node.volumeKind {
-            cell.imageView?.image = NSImage(systemSymbolName: kind.symbolName, accessibilityDescription: kind.label)
-        } else {
-            cell.imageView?.image = NSImage(systemSymbolName: "folder", accessibilityDescription: "文件夹")
-        }
+        cell.imageView?.image = node.icon
+        cell.imageView?.contentTintColor = node.volumeKind == .network ? .secondaryLabelColor : nil
         return cell
     }
 
