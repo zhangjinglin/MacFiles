@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 final class EnterTableView: NSTableView {
     var onEnter: (() -> Void)?
     var onTab: ((Bool) -> Void)?
+    var onDelete: (() -> Void)?
 
     override func keyDown(with event: NSEvent) {
         // 36 = Return, 76 = keypad Enter. Always open, never rename.
@@ -15,7 +16,20 @@ final class EnterTableView: NSTableView {
             onTab?(event.modifierFlags.contains(.shift))
             return
         }
+        // 51 = Delete (Backspace). Command+Delete removes the selection.
+        if event.keyCode == 51, event.modifierFlags.contains(.command) {
+            onDelete?()
+            return
+        }
         super.keyDown(with: event)
+    }
+
+    /// Right-clicking a row selects it first so the context menu acts on it.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let clicked = row(at: convert(event.locationInWindow, from: nil))
+        guard clicked >= 0 else { return nil }
+        selectRowIndexes(IndexSet(integer: clicked), byExtendingSelection: false)
+        return menu
     }
 }
 
@@ -45,6 +59,16 @@ final class FileListViewController: NSViewController {
         tableView.onTab = { [weak self] _ in
             self?.onTab?()
         }
+        tableView.onDelete = { [weak self] in
+            self?.deleteSelection()
+        }
+
+        let menu = NSMenu()
+        let deleteItem = NSMenuItem(title: "删除", action: #selector(deleteSelection), keyEquivalent: "\u{8}")
+        deleteItem.keyEquivalentModifierMask = .command
+        deleteItem.target = self
+        menu.addItem(deleteItem)
+        tableView.menu = menu
 
         let scrollView = NSScrollView()
         scrollView.documentView = tableView
@@ -136,10 +160,90 @@ final class FileListViewController: NSViewController {
             NSWorkspace.shared.open(item.url)
         }
     }
+
+    // MARK: - Deletion
+
+    private func isNetworkItem(_ item: FileItem) -> Bool {
+        (try? item.url.resourceValues(forKeys: [.volumeIsLocalKey]).volumeIsLocal) == false
+    }
+
+    @objc private func deleteSelection() {
+        let row = tableView.selectedRow
+        guard row >= 0, row < items.count, let directory else { return }
+        let item = items[row]
+        let isNetwork = isNetworkItem(item)
+
+        let alert = NSAlert()
+        alert.messageText = "确定要删除“\(item.name)”吗？"
+        alert.informativeText = isNetwork
+            ? "该项目位于网络磁盘，删除后无法恢复，不会进入废纸篓。"
+            : "该项目将被移到废纸篓。"
+        alert.alertStyle = .warning
+        let deleteButton = alert.addButton(withTitle: isNetwork ? "永久删除" : "删除")
+        deleteButton.hasDestructiveAction = true
+        alert.addButton(withTitle: "取消")
+
+        let confirmed: (Bool) -> Void = { [weak self] ok in
+            guard ok else { return }
+            self?.delete(item, in: directory, isNetwork: isNetwork)
+        }
+        if let window = view.window {
+            alert.beginSheetModal(for: window) { confirmed($0 == .alertFirstButtonReturn) }
+        } else {
+            confirmed(alert.runModal() == .alertFirstButtonReturn)
+        }
+    }
+
+    private func delete(_ item: FileItem, in directory: URL, isNetwork: Bool) {
+        let token = loadToken
+        Task {
+            let message: String?
+            do {
+                try await FileSystemManager.delete(item.url, isNetwork: isNetwork)
+                message = nil
+            } catch {
+                message = error.localizedDescription
+            }
+            guard token == loadToken, self.directory == directory else { return }
+            guard let message else {
+                remove(item)
+                return
+            }
+            let alert = NSAlert()
+            alert.messageText = "无法删除“\(item.name)”"
+            alert.informativeText = message
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "好")
+            if let window = view.window {
+                alert.beginSheetModal(for: window) { _ in }
+            } else {
+                alert.runModal()
+            }
+        }
+    }
+
+    private func remove(_ item: FileItem) {
+        guard let row = items.firstIndex(where: { $0.url == item.url }) else { return }
+        items.remove(at: row)
+        tableView.reloadData()
+        guard !items.isEmpty else { return }
+        tableView.selectRowIndexes(IndexSet(integer: min(row, items.count - 1)), byExtendingSelection: false)
+        tableView.scrollRowToVisible(tableView.selectedRow)
+    }
 }
 
 extension FileListViewController: NSTableViewDataSource {
     func numberOfRows(in tableView: NSTableView) -> Int { items.count }
+}
+
+extension FileListViewController: NSMenuItemValidation {
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        guard menuItem.action == #selector(deleteSelection) else { return true }
+        let row = tableView.selectedRow
+        guard row >= 0, row < items.count else { return false }
+        menuItem.title = isNetworkItem(items[row]) ? "永久删除" : "删除"
+        return true
+    }
 }
 
 extension FileListViewController: NSTableViewDelegate {

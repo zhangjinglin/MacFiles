@@ -83,6 +83,19 @@ enum FileSystemManager {
         }.value
     }
 
+    /// Local and external volumes support the Trash, so items go there and
+    /// stay recoverable. Network shares usually have no Trash, so delete
+    /// permanently instead of failing with "cannot move to Trash".
+    static func delete(_ url: URL, isNetwork: Bool) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            if isNetwork {
+                try FileManager.default.removeItem(at: url)
+            } else {
+                try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+            }
+        }.value
+    }
+
     static func subdirectories(of directory: URL) async -> [URL] {
         await Task.detached(priority: .userInitiated) {
             let keys: Set<URLResourceKey> = [.isDirectoryKey]
