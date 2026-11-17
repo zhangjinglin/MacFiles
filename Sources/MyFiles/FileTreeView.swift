@@ -35,6 +35,12 @@ final class TreeNode {
     }
 }
 
+final class TransparentRowView: NSTableRowView {
+    override func drawBackground(in dirtyRect: NSRect) {
+        // Let the outline view's gray background show through group rows.
+    }
+}
+
 final class TreeGroup {
     let kind: Volume.Kind
     var nodes: [TreeNode] = []
@@ -293,6 +299,10 @@ extension DirectoryTreeViewController: NSOutlineViewDataSource {
 extension DirectoryTreeViewController: NSOutlineViewDelegate {
     func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool {
         item is TreeGroup
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
+        item is TreeGroup ? TransparentRowView() : nil
     }
 
     func outlineView(_ outlineView: NSOutlineView, shouldShowOutlineCellForItem item: Any) -> Bool {
