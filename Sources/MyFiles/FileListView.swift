@@ -89,6 +89,9 @@ final class FileListViewController: NSViewController {
             guard token == loadToken else { return }
             items = result.items
             tableView.reloadData()
+            if view.window?.firstResponder === tableView {
+                selectFirstRowIfNeeded()
+            }
             if let message = result.errorMessage {
                 errorLabel.stringValue = "无法读取目录：\(message)"
                 errorLabel.isHidden = false
@@ -98,6 +101,15 @@ final class FileListViewController: NSViewController {
 
     func focus() {
         view.window?.makeFirstResponder(tableView)
+        selectFirstRowIfNeeded()
+    }
+
+    /// Keyboarding into an empty selection shows no highlight, so pick the
+    /// first row. An existing selection is kept when focus returns.
+    private func selectFirstRowIfNeeded() {
+        guard tableView.selectedRow < 0, !items.isEmpty else { return }
+        tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        tableView.scrollRowToVisible(0)
     }
 
     override func viewDidAppear() {
