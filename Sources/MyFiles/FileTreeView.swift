@@ -112,6 +112,7 @@ final class DirectoryTreeViewController: NSViewController {
         outlineView.headerView = nil
         outlineView.indentationPerLevel = 14
         outlineView.rowHeight = 22
+        outlineView.backgroundColor = .windowBackgroundColor
         outlineView.dataSource = self
         outlineView.delegate = self
         outlineView.target = self
@@ -127,6 +128,8 @@ final class DirectoryTreeViewController: NSViewController {
         scrollView.documentView = outlineView
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = .windowBackgroundColor
         scrollView.contentInsets = NSEdgeInsets(top: 6, left: 0, bottom: 0, right: 0)
         view = scrollView
 
