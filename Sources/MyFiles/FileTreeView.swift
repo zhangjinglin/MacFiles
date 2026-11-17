@@ -63,12 +63,15 @@ final class DirectoryTreeViewController: NSViewController {
     }()
 
     private lazy var networkIcon: NSImage = {
-        let sidebarIcon = "/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/SidebarNetwork.icns"
-        if let image = NSImage(contentsOfFile: sidebarIcon) {
+        let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
+        if let image = NSImage(
+            systemSymbolName: "externaldrive.connected.to.line.below",
+            accessibilityDescription: "网络磁盘"
+        )?.withSymbolConfiguration(config) {
             image.isTemplate = true
             return sizedIcon(image)
         }
-        return sizedIcon(NSWorkspace.shared.icon(forFile: "/Volumes"))
+        return sizedIcon(NSWorkspace.shared.icon(for: .folder))
     }()
 
     private func sizedIcon(_ image: NSImage) -> NSImage {
@@ -309,7 +312,7 @@ extension DirectoryTreeViewController: NSOutlineViewDelegate {
         cell.textField?.font = .systemFont(ofSize: 13)
         cell.textField?.textColor = .labelColor
         cell.imageView?.image = node.icon
-        cell.imageView?.contentTintColor = node.volumeKind == .network ? .secondaryLabelColor : nil
+        cell.imageView?.contentTintColor = node.volumeKind == .network ? .controlAccentColor : nil
         return cell
     }
 

@@ -39,6 +39,7 @@ final class FileListViewController: NSViewController {
         tableView.delegate = self
         tableView.target = self
         tableView.doubleAction = #selector(handleDoubleClick)
+        tableView.backgroundColor = .windowBackgroundColor
         tableView.onEnter = { [weak self] in
             self?.openSelection()
         }
@@ -50,6 +51,8 @@ final class FileListViewController: NSViewController {
         scrollView.documentView = tableView
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = .windowBackgroundColor
 
         errorLabel.font = .systemFont(ofSize: 12)
         errorLabel.textColor = .secondaryLabelColor
