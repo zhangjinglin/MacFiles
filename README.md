@@ -11,18 +11,21 @@ macOS 原生双栏文件管理器。左侧显示已挂载的磁盘和可逐层�
 open build/MyFiles.app
 ```
 
-`build.sh` 会执行 `swift build -c release`，组装 `build/MyFiles.app`（Info.plist + ad-hoc 签名）。项目没有第三方依赖，未启用 App Sandbox。
+`build.sh` 会执行 `swift build -c release`，组装 `build/MyFiles.app`（Info.plist + 代码签名）。签名会优先使用固定身份（`MYFILES_SIGN_IDENTITY` 环境变量、`MyFiles Dev` 自签名证书，或钥匙串中的 Apple Development 证书），这样重新编译后 macOS 的目录访问授权不会被重置；找不到证书时回退到 ad-hoc 签名。项目没有第三方依赖，未启用 App Sandbox。
 
 ## 功能
 
 - 左侧：通过 `FileManager.mountedVolumeURLs` 枚举已挂载卷，按本机磁盘、外接磁盘、网络磁盘分组，卷名使用系统卷名称。
 - 左侧目录树使用 `NSOutlineView`，只在用户展开目录时读取下一级子目录，只显示目录，过滤隐藏文件和隐藏目录。
-- 右侧文件列表使用 `NSTableView`，显示系统图标和文件名，按 `localizedStandardCompare` 自然升序排列（`file2` 在 `file10` 之前）。
+- 右侧支持列表和图标两种显示方式，通过顶部工具栏切换。列表使用 `NSTableView` 显示系统图标和文件名；图标使用 `NSCollectionView` 网格，图片、视频和 PDF 通过 Quick Look 生成缩略图。两者都按 `localizedStandardCompare` 自然升序排列（`file2` 在 `file10` 之前）。
 - 双击文件夹进入，双击文件调用 `NSWorkspace.open` 使用系统默认应用打开。
-- 右侧列表按 Enter 执行打开（不是重命名），上下方向键切换选中项。
-- 右键点击列表项弹出“删除”菜单，也可按 Cmd+Delete。删除前总会弹出确认框：本机和外接磁盘移入废纸篓，网络磁盘永久删除（提示不可恢复）。
+- 右侧视图按 Enter 执行打开（不是重命名），上下方向键切换选中项。
+- 图标模式底部显示状态栏，拖动滑块可在 32–128pt 之间实时调整图标大小。
+- 选中文件按空格使用 `QLPreviewPanel` 打开 Quick Look 预览，再按空格或 Esc 关闭；列表和图标模式都支持。
+- 右键点击项目弹出“打开方式”和“删除”菜单，也可按 Cmd+Delete 删除。删除前总会弹出确认框：本机和外接磁盘移入废纸篓，网络磁盘永久删除（提示不可恢复）。
+- “打开方式”子菜单列出系统里能打开该项目的应用（带图标），底部“其他…”可从应用程序目录选择；打开失败会弹出错误提示。
 - 左侧目录树选中目录后按 Enter 展开或折叠，与双击箭头行为一致。
-- Tab / Shift+Tab 在左侧目录树和右侧文件列表之间切换键盘焦点，左右方向键保持原生语义（展开/折叠目录），互不冲突。
+- Tab / Shift+Tab 在左侧目录树和右侧视图之间切换键盘焦点，左右方向键保持原生语义（展开/折叠目录），互不冲突。
 - 所有目录读取和卷枚举都在后台线程执行，结果回到主线程更新 UI。
 - 目录读取失败（无权限、卷已卸载、网络中断等）时在右侧显示错误提示，不崩溃。
 - 监听 `NSWorkspace.didMountNotification` / `didUnmountNotification`，挂载或卸载卷时刷新左侧列表，并保留已有节点的展开状态。
@@ -39,10 +42,10 @@ Resources/
   AppIcon.icns                 打包进 .app 的图标
 Sources/MyFiles/
   App.swift                    应用入口
-  ContentView.swift            主窗口、NSSplitViewController 分栏
+  ContentView.swift            主窗口、NSSplitViewController 分栏、顶部工具栏
   FileSystemManager.swift      卷枚举、目录与文件读取
   FileTreeView.swift           左侧磁盘和目录树（NSOutlineView）
-  FileListView.swift           右侧文件列表（NSTableView）与 Enter 键处理
+  FileListView.swift           右侧列表/图标视图、右键菜单、Quick Look、图标大小状态栏
   FileItem.swift               文件条目模型
 ```
 
@@ -67,7 +70,10 @@ swift tools/gen-icon.swift Resources/AppIcon-1024.png
 - 磁盘映像挂载后左侧自动出现，卸载后自动移除。
 - 无权限目录显示错误提示，程序继续运行。
 - 本机文件删除后进入废纸篓；网络卷文件删除前提示不可恢复，确认后直接删除并刷新列表。
+- 顶部工具栏在列表和图标之间切换；图标模式显示图片/视频缩略图，底部滑块调整图标大小。
+- 空格打开和关闭 Quick Look 预览。
+- 右键“打开方式”能列出可用应用并成功打开；重新编译后目录访问授权保留。
 
 ## 不包含的功能
 
-文件复制、移动、重命名、搜索、预览、标签页、书签、自定义文件关联等均未实现。
+文件复制、移动、重命名、搜索、标签页、书签、自定义文件关联等均未实现。
