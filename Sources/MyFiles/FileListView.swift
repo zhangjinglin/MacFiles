@@ -9,6 +9,9 @@ final class EnterTableView: NSTableView {
     var onTab: ((Bool) -> Void)?
     var onDelete: (() -> Void)?
 
+    private var rubberBandOrigin: NSPoint?
+    private var rubberBandRect: NSRect?
+
     override func keyDown(with event: NSEvent) {
         // 36 = Return, 76 = keypad Enter. Always open, never rename.
         if event.keyCode == 36 || event.keyCode == 76 {
@@ -32,11 +35,71 @@ final class EnterTableView: NSTableView {
         super.keyDown(with: event)
     }
 
-    /// Right-clicking a row selects it first so the context menu acts on it.
+    /// Dragging from empty space draws a rubber band and selects every row
+    /// it touches, matching the icon view and Windows-style selection.
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let modifiers = event.modifierFlags.intersection([.command, .shift])
+        if row(at: point) < 0, modifiers.isEmpty {
+            rubberBandOrigin = point
+            rubberBandRect = nil
+            deselectAll(nil)
+            window?.makeFirstResponder(self)
+            return
+        }
+        super.mouseDown(with: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let origin = rubberBandOrigin else {
+            super.mouseDragged(with: event)
+            return
+        }
+        let point = convert(event.locationInWindow, from: nil)
+        let rect = NSRect(
+            x: min(origin.x, point.x),
+            y: min(origin.y, point.y),
+            width: abs(point.x - origin.x),
+            height: abs(point.y - origin.y)
+        )
+        rubberBandRect = rect
+
+        var indexes = IndexSet()
+        for row in 0..<numberOfRows where rect.intersects(self.rect(ofRow: row)) {
+            indexes.insert(row)
+        }
+        selectRowIndexes(indexes, byExtendingSelection: false)
+        needsDisplay = true
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard rubberBandOrigin != nil else {
+            super.mouseUp(with: event)
+            return
+        }
+        rubberBandOrigin = nil
+        rubberBandRect = nil
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard let rect = rubberBandRect else { return }
+        NSColor.selectedContentBackgroundColor.withAlphaComponent(0.2).setFill()
+        rect.fill()
+        NSColor.selectedContentBackgroundColor.setStroke()
+        NSBezierPath(rect: rect).stroke()
+    }
+
+    /// Right-clicking a row selects it first so the context menu acts on it,
+    /// while keeping an existing multi-selection intact.
     override func menu(for event: NSEvent) -> NSMenu? {
-        let clicked = row(at: convert(event.locationInWindow, from: nil))
+        let point = convert(event.locationInWindow, from: nil)
+        let clicked = row(at: point)
         guard clicked >= 0 else { return nil }
-        selectRowIndexes(IndexSet(integer: clicked), byExtendingSelection: false)
+        if !selectedRowIndexes.contains(clicked) {
+            selectRowIndexes(IndexSet(integer: clicked), byExtendingSelection: false)
+        }
         return menu
     }
 }
@@ -70,19 +133,46 @@ final class FileIconCollectionView: NSCollectionView {
         super.keyDown(with: event)
     }
 
+    private var selectionAnchor: IndexPath?
+
     override func mouseDown(with event: NSEvent) {
-        super.mouseDown(with: event)
-        guard event.clickCount == 2 else { return }
         let point = convert(event.locationInWindow, from: nil)
-        guard indexPathForItem(at: point) != nil else { return }
+        let clicked = indexPathForItem(at: point)
+
+        // NSCollectionView treats Shift+click as "add one item", but file
+        // managers select the whole range between the anchor and the click.
+        if event.modifierFlags.contains(.shift), let clicked {
+            let anchor = validSelectionAnchor() ?? clicked
+            let range = anchor.item <= clicked.item
+                ? anchor.item...clicked.item
+                : clicked.item...anchor.item
+            let paths = Set(range.map { IndexPath(item: $0, section: clicked.section) })
+            selectItems(at: paths, scrollPosition: [])
+            return
+        }
+
+        super.mouseDown(with: event)
+        selectionAnchor = clicked
+
+        guard event.clickCount == 2, clicked != nil else { return }
         onDoubleClick?()
     }
 
-    /// Right-clicking an item selects it first so the context menu acts on it.
+    private func validSelectionAnchor() -> IndexPath? {
+        guard let anchor = selectionAnchor,
+              anchor.section < numberOfSections,
+              anchor.item < numberOfItems(inSection: anchor.section) else { return nil }
+        return anchor
+    }
+
+    /// Right-clicking an item selects it first so the context menu acts on it,
+    /// while keeping an existing multi-selection intact.
     override func menu(for event: NSEvent) -> NSMenu? {
         let point = convert(event.locationInWindow, from: nil)
         guard let indexPath = indexPathForItem(at: point) else { return nil }
-        selectItems(at: [indexPath], scrollPosition: [])
+        if !selectionIndexPaths.contains(indexPath) {
+            selectItems(at: [indexPath], scrollPosition: [])
+        }
         return menu
     }
 }
@@ -283,6 +373,7 @@ final class FileListViewController: NSViewController {
         tableView.addTableColumn(column)
         tableView.headerView = nil
         tableView.rowHeight = 22
+        tableView.allowsMultipleSelection = true
         tableView.dataSource = self
         tableView.delegate = self
         tableView.target = self
@@ -314,6 +405,7 @@ final class FileListViewController: NSViewController {
         collectionView.collectionViewLayout = layout
         collectionView.dataSource = self
         collectionView.isSelectable = true
+        collectionView.allowsMultipleSelection = true
         collectionView.backgroundColors = [.clear]
         collectionView.register(FileIconItem.self, forItemWithIdentifier: FileIconItem.identifier)
         collectionView.onEnter = { [weak self] in
@@ -428,7 +520,7 @@ final class FileListViewController: NSViewController {
 
     func setDisplayMode(_ mode: DisplayMode) {
         guard mode != displayMode else { return }
-        let index = selectedIndex
+        let indexes = selectedIndexes
         displayMode = mode
         tableScrollView.isHidden = mode != .list
         iconScrollView.isHidden = mode != .icons
@@ -436,8 +528,8 @@ final class FileListViewController: NSViewController {
         if mode == .icons {
             collectionView.frame.size.width = iconScrollView.contentSize.width
         }
-        if let index {
-            select(index)
+        if !indexes.isEmpty {
+            select(indexes)
         }
         view.window?.makeFirstResponder(mode == .list ? tableView : collectionView)
     }
@@ -445,38 +537,49 @@ final class FileListViewController: NSViewController {
     /// Keyboarding into an empty selection shows no highlight, so pick the
     /// first row. An existing selection is kept when focus returns.
     private func selectFirstRowIfNeeded() {
-        guard selectedIndex == nil, !items.isEmpty else { return }
-        select(0)
+        guard selectedIndexes.isEmpty, !items.isEmpty else { return }
+        select(IndexSet(integer: 0))
     }
 
-    private func select(_ index: Int) {
-        guard items.indices.contains(index) else { return }
+    private func select(_ indexes: IndexSet) {
+        var valid = IndexSet()
+        for index in indexes where items.indices.contains(index) {
+            valid.insert(index)
+        }
+        guard !valid.isEmpty else { return }
         switch displayMode {
         case .list:
-            tableView.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
-            tableView.scrollRowToVisible(index)
+            tableView.selectRowIndexes(valid, byExtendingSelection: false)
+            if let first = valid.first {
+                tableView.scrollRowToVisible(first)
+            }
         case .icons:
-            let indexPath = IndexPath(item: index, section: 0)
-            collectionView.selectItems(at: Set([indexPath]), scrollPosition: [])
-            collectionView.scrollToItems(at: Set([indexPath]), scrollPosition: .nearestVerticalEdge)
+            let paths = Set(valid.map { IndexPath(item: $0, section: 0) })
+            collectionView.selectItems(at: paths, scrollPosition: [])
+            if let first = valid.first {
+                collectionView.scrollToItems(
+                    at: Set([IndexPath(item: first, section: 0)]),
+                    scrollPosition: .nearestVerticalEdge
+                )
+            }
         }
     }
 
-    private var selectedIndex: Int? {
+    private var selectedIndexes: IndexSet {
         switch displayMode {
         case .list:
-            let row = tableView.selectedRow
-            return items.indices.contains(row) ? row : nil
+            return tableView.selectedRowIndexes
         case .icons:
-            guard let indexPath = collectionView.selectionIndexPaths.first,
-                  items.indices.contains(indexPath.item) else { return nil }
-            return indexPath.item
+            return IndexSet(collectionView.selectionIndexPaths.map(\.item))
         }
+    }
+
+    private var selectedItems: [FileItem] {
+        selectedIndexes.compactMap { items.indices.contains($0) ? items[$0] : nil }
     }
 
     private var selectedItem: FileItem? {
-        guard let index = selectedIndex else { return nil }
-        return items[index]
+        selectedIndexes.first.flatMap { items.indices.contains($0) ? items[$0] : nil }
     }
 
     override func viewDidAppear() {
@@ -511,21 +614,24 @@ final class FileListViewController: NSViewController {
             panel.orderOut(nil)
             return
         }
-        guard selectedItem != nil else { return }
+        guard !selectedItems.isEmpty else { return }
         panel.dataSource = self
         panel.makeKeyAndOrderFront(nil)
     }
 
     // MARK: - Open With
 
-    /// Opens the selected item with an explicitly chosen application.
+    /// Opens the selected items with an explicitly chosen application.
     private func openSelection(withApplicationAt applicationURL: URL) {
-        guard let item = selectedItem else { return }
+        let targets = selectedItems
+        guard !targets.isEmpty else { return }
+        let fileName = targets.count == 1 ? targets[0].name : "选中的 \(targets.count) 个项目"
+
         let configuration = NSWorkspace.OpenConfiguration()
-        NSWorkspace.shared.open([item.url], withApplicationAt: applicationURL, configuration: configuration) { [weak self] _, error in
+        NSWorkspace.shared.open(targets.map(\.url), withApplicationAt: applicationURL, configuration: configuration) { [weak self] _, error in
             guard let error else { return }
             DispatchQueue.main.async {
-                self?.presentOpenError(error, fileName: item.name)
+                self?.presentOpenError(error, fileName: fileName)
             }
         }
     }
@@ -584,14 +690,22 @@ final class FileListViewController: NSViewController {
     }
 
     @objc private func deleteSelection() {
-        guard let item = selectedItem, let directory else { return }
-        let isNetwork = isNetworkItem(item)
+        let targets = selectedItems
+        guard !targets.isEmpty, let directory else { return }
+        let isNetwork = isNetworkItem(targets[0])
 
         let alert = NSAlert()
-        alert.messageText = "确定要删除“\(item.name)”吗？"
-        alert.informativeText = isNetwork
-            ? "该项目位于网络磁盘，删除后无法恢复，不会进入废纸篓。"
-            : "该项目将被移到废纸篓。"
+        if targets.count == 1 {
+            alert.messageText = "确定要删除“\(targets[0].name)”吗？"
+            alert.informativeText = isNetwork
+                ? "该项目位于网络磁盘，删除后无法恢复，不会进入废纸篓。"
+                : "该项目将被移到废纸篓。"
+        } else {
+            alert.messageText = "确定要删除选中的 \(targets.count) 个项目吗？"
+            alert.informativeText = isNetwork
+                ? "这些项目位于网络磁盘，删除后无法恢复，不会进入废纸篓。"
+                : "这些项目将被移到废纸篓。"
+        }
         alert.alertStyle = .warning
         let deleteButton = alert.addButton(withTitle: isNetwork ? "永久删除" : "删除")
         deleteButton.hasDestructiveAction = true
@@ -599,7 +713,7 @@ final class FileListViewController: NSViewController {
 
         let confirmed: (Bool) -> Void = { [weak self] ok in
             guard ok else { return }
-            self?.delete(item, in: directory, isNetwork: isNetwork)
+            self?.delete(targets, in: directory, isNetwork: isNetwork)
         }
         if let window = view.window {
             alert.beginSheetModal(for: window) { confirmed($0 == .alertFirstButtonReturn) }
@@ -608,24 +722,28 @@ final class FileListViewController: NSViewController {
         }
     }
 
-    private func delete(_ item: FileItem, in directory: URL, isNetwork: Bool) {
+    private func delete(_ targets: [FileItem], in directory: URL, isNetwork: Bool) {
         let token = loadToken
         Task {
-            let message: String?
-            do {
-                try await FileSystemManager.delete(item.url, isNetwork: isNetwork)
-                message = nil
-            } catch {
-                message = error.localizedDescription
+            var deleted: [FileItem] = []
+            var failures: [String] = []
+            for item in targets {
+                do {
+                    try await FileSystemManager.delete(item.url, isNetwork: isNetwork)
+                    deleted.append(item)
+                } catch {
+                    failures.append("\(item.name)：\(error.localizedDescription)")
+                }
             }
             guard token == loadToken, self.directory == directory else { return }
-            guard let message else {
-                remove(item)
-                return
-            }
+            remove(deleted)
+
+            guard !failures.isEmpty else { return }
             let alert = NSAlert()
-            alert.messageText = "无法删除“\(item.name)”"
-            alert.informativeText = message
+            alert.messageText = failures.count == 1
+                ? "有 1 个项目无法删除"
+                : "有 \(failures.count) 个项目无法删除"
+            alert.informativeText = failures.joined(separator: "\n")
             alert.alertStyle = .warning
             alert.addButton(withTitle: "好")
             if let window = view.window {
@@ -636,13 +754,15 @@ final class FileListViewController: NSViewController {
         }
     }
 
-    private func remove(_ item: FileItem) {
-        guard let row = items.firstIndex(where: { $0.url == item.url }) else { return }
-        items.remove(at: row)
+    private func remove(_ removed: [FileItem]) {
+        guard !removed.isEmpty else { return }
+        let removedURLs = Set(removed.map(\.url))
+        let firstRemoved = items.firstIndex { removedURLs.contains($0.url) }
+        items.removeAll { removedURLs.contains($0.url) }
         tableView.reloadData()
         collectionView.reloadData()
-        guard !items.isEmpty else { return }
-        select(min(row, items.count - 1))
+        guard let firstRemoved, !items.isEmpty else { return }
+        select(IndexSet(integer: min(firstRemoved, items.count - 1)))
     }
 }
 
@@ -652,11 +772,13 @@ extension FileListViewController: NSTableViewDataSource {
 
 extension FileListViewController: @preconcurrency QLPreviewPanelDataSource {
     func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
-        selectedItem == nil ? 0 : 1
+        selectedItems.count
     }
 
     func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
-        selectedItem?.url as NSURL?
+        let items = selectedItems
+        guard items.indices.contains(index) else { return nil }
+        return items[index].url as NSURL
     }
 }
 
@@ -735,8 +857,10 @@ extension FileListViewController: NSMenuDelegate {
 extension FileListViewController: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         guard menuItem.action == #selector(deleteSelection) else { return true }
-        guard let item = selectedItem else { return false }
-        menuItem.title = isNetworkItem(item) ? "永久删除" : "删除"
+        let targets = selectedItems
+        guard let item = targets.first else { return false }
+        let action = isNetworkItem(item) ? "永久删除" : "删除"
+        menuItem.title = targets.count > 1 ? "\(action) \(targets.count) 个项目" : action
         return true
     }
 }
